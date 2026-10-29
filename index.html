@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Borderline</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="is-intro">
+  <div id="load-overlay" role="status" aria-live="polite" aria-busy="true" aria-label="Chargement">
+    <div class="load-card">
+      <p class="load-text" id="load-text">Ça carto-charge…</p>
+      <div class="load-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="load-bar-fill" class="load-bar-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="intro-modal" class="intro-modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+    <div class="intro-card">
+      <h1 id="intro-title">Borderline</h1>
+      <p class="lead">Les côtes sont là. Pas les frontières.<br>Saurez-vous placer les pays quand même ?</p>
+      <p class="field-label">Carte</p>
+      <div class="region-switch" role="group" aria-label="Carte">
+        <button type="button" data-mode="europe" aria-pressed="true">Europe</button>
+        <button type="button" data-mode="africa" aria-pressed="false">Afrique</button>
+        <button type="button" data-mode="americas" aria-pressed="false">Amériques</button>
+        <button type="button" data-mode="asia" aria-pressed="false">Asie</button>
+        <button type="button" data-mode="us" aria-pressed="false">États-Unis</button>
+        <button type="button" data-mode="france" aria-pressed="false">Départements</button>
+      </div>
+      <p class="field-label">Partie</p>
+      <div class="mode-switch" role="group" aria-label="Longueur de la partie">
+        <button type="button" data-length="5" aria-pressed="true">5 pays</button>
+        <button type="button" data-length="10" aria-pressed="false">10 pays</button>
+      </div>
+      <label class="hard-row">
+        <span class="hard-copy">
+          <span class="hard-title">Mode difficile</span>
+          <span class="hard-hint">Pays enclavés seulement.</span>
+        </span>
+        <input type="checkbox" data-hard>
+        <span class="switch-track" aria-hidden="true"></span>
+      </label>
+      <button type="button" id="btn-start" class="btn-primary">Je me lance</button>
+    </div>
+  </div>
+
+  <header id="chrome" hidden>
+    <h1 class="brand">Borderline</h1>
+    <div id="screen-game">
+      <p class="round-meta" id="round-kicker">Manche 1 / 5</p>
+      <p class="round-prompt" id="round-prompt">Cliquez sur</p>
+      <p class="target-line" id="target-label">—</p>
+      <div id="result" hidden>
+        <p class="round-prompt result-kicker">Votre note</p>
+        <div class="round-score-banner">
+          <p class="round-score-banner-score"><strong id="result-score">—</strong>/100</p>
+        </div>
+        <p class="result-detail" id="result-detail"></p>
+        <button type="button" id="btn-next" class="btn-primary btn-block">Manche suivante</button>
+      </div>
+    </div>
+    <div id="review-bar" hidden>
+      <p class="round-prompt">Votre carte</p>
+      <button type="button" id="btn-back" class="btn-primary btn-block">Retour au score</button>
+    </div>
+  </header>
+
+  <aside id="history-wrap" class="score-history-wrap" hidden aria-label="Votre partie">
+    <p class="score-history-heading">Votre partie</p>
+    <ul id="history" class="score-history"></ul>
+  </aside>
+
+  <div id="finish-modal" class="intro-modal" hidden role="dialog" aria-modal="true" aria-labelledby="finish-title">
+    <div class="intro-card finish-card">
+      <h1 id="finish-title">Partie terminée</h1>
+      <p class="final-score-kicker">Votre note</p>
+      <p class="final-score" id="final-score">—</p>
+      <ul class="finish-recap" id="finish-recap" aria-label="Bilan des manches"></ul>
+      <button type="button" id="btn-map" class="btn-secondary">Voir ma carte</button>
+      <p class="field-label">Prochaine partie</p>
+      <div class="region-switch" role="group" aria-label="Carte de la prochaine partie">
+        <button type="button" data-mode="europe" aria-pressed="true">Europe</button>
+        <button type="button" data-mode="africa" aria-pressed="false">Afrique</button>
+        <button type="button" data-mode="americas" aria-pressed="false">Amériques</button>
+        <button type="button" data-mode="asia" aria-pressed="false">Asie</button>
+        <button type="button" data-mode="us" aria-pressed="false">États-Unis</button>
+        <button type="button" data-mode="france" aria-pressed="false">Départements</button>
+      </div>
+      <div class="mode-switch mode-switch-spaced" role="group" aria-label="Longueur de la prochaine partie">
+        <button type="button" data-length="5" aria-pressed="true">5 pays</button>
+        <button type="button" data-length="10" aria-pressed="false">10 pays</button>
+      </div>
+      <label class="hard-row">
+        <span class="hard-copy">
+          <span class="hard-title">Mode difficile</span>
+          <span class="hard-hint">Pays enclavés seulement.</span>
+        </span>
+        <input type="checkbox" data-hard>
+        <span class="switch-track" aria-hidden="true"></span>
+      </label>
+      <p class="mode-note" id="finish-note"></p>
+      <button type="button" id="btn-replay" class="btn-primary">Rejouer</button>
+    </div>
+  </div>
+
+  <div id="map-shell">
+    <div id="map"></div>
+    <p class="map-credit">Fond de carte Natural Earth</p>
+  </div>
+  <div id="review-tip" class="review-tip" hidden role="tooltip">
+    <p class="review-tip-name" id="review-tip-name"></p>
+    <p class="review-tip-detail" id="review-tip-detail"></p>
+  </div>
+
+  <button type="button" id="btn-score-info" class="score-info" aria-label="Comment les scores sont calculés" aria-expanded="false" aria-controls="score-pop">
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.25"></circle>
+      <path d="M8 7.15v4.15" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"></path>
+      <circle cx="8" cy="4.55" r="0.75" fill="currentColor"></circle>
+    </svg>
+  </button>
+  <div id="score-pop" class="score-pop" hidden role="dialog" aria-labelledby="score-pop-title">
+    <p class="score-pop-title" id="score-pop-title">Les scores</p>
+    <div id="score-pop-body"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
