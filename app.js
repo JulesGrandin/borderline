@@ -53,6 +53,7 @@ const data = {
 };
 
 const sampleCache = new Map();
+let finishTimer = null;
 
 const els = {};
 
@@ -75,25 +76,17 @@ async function init() {
   els.resultDetail = document.getElementById("result-detail");
   els.finalScore = document.getElementById("final-score");
   els.recap = document.getElementById("finish-recap");
-  els.finishNote = document.getElementById("finish-note");
   els.reviewTip = document.getElementById("review-tip");
   els.reviewTipName = document.getElementById("review-tip-name");
   els.reviewTipDetail = document.getElementById("review-tip-detail");
-  els.scorePop = document.getElementById("score-pop");
-  els.scorePopBody = document.getElementById("score-pop-body");
-  els.scoreInfo = document.getElementById("btn-score-info");
-
   document.querySelectorAll("[data-hard]").forEach((input) => {
     input.addEventListener("change", onHardChange);
   });
   document.getElementById("btn-start").addEventListener("click", startGame);
-  document.getElementById("btn-replay").addEventListener("click", startGame);
+  document.getElementById("btn-replay").addEventListener("click", showHome);
   document.getElementById("btn-next").addEventListener("click", nextRound);
   document.getElementById("btn-map").addEventListener("click", showMyMap);
   document.getElementById("btn-back").addEventListener("click", showScore);
-  document.getElementById("btn-score-info").addEventListener("click", toggleScorePop);
-  document.addEventListener("click", onDocumentClick);
-  document.addEventListener("keydown", onDocumentKey);
   document.body.addEventListener("click", onControlClick);
 
   if (!window.d3) {
@@ -107,6 +100,7 @@ async function init() {
     buildMap();
     syncControls();
     resize();
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", resize);
     window.addEventListener("resize", resize);
     els.loadOverlay.classList.add("is-done");
     els.loadOverlay.setAttribute("aria-busy", "false");
@@ -182,6 +176,7 @@ function buildIndex() {
   };
   data.coastline = buildCoastline();
   data.landlocked = landlockedIds();
+  buildLocalCoasts();
   delete data.raw;
 }
 
@@ -249,6 +244,185 @@ function isCaspian(point) {
 
 function isAral(point) {
   return point[0] >= 57.8 && point[0] <= 62.2 && point[1] >= 43.2 && point[1] <= 47.2;
+}
+
+function kmBetween(a, b) {
+  const lon1 = (a[0] * Math.PI) / 180;
+  const lat1 = (a[1] * Math.PI) / 180;
+  const lon2 = (b[0] * Math.PI) / 180;
+  const lat2 = (b[1] * Math.PI) / 180;
+  const dlon = lon2 - lon1;
+  const dlat = lat2 - lat1;
+  const h = Math.sin(dlat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dlon / 2) ** 2;
+  return 2 * EARTH_KM * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function densifyLine(start, end, stepKm) {
+  const distance = Math.max(kmBetween(start, end), 0.001);
+  const steps = Math.max(1, Math.round(distance / stepKm));
+  const points = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const t = i / steps;
+    points.push([
+      start[0] + (end[0] - start[0]) * t,
+      start[1] + (end[1] - start[1]) * t,
+    ]);
+  }
+  return points;
+}
+
+function pointGrid(points, cell) {
+  const grid = new Map();
+  points.forEach((point) => {
+    const key = Math.floor(point[0] / cell) + "," + Math.floor(point[1] / cell);
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(point);
+  });
+  return grid;
+}
+
+function nearestKm(grid, cell, point, limitKm) {
+  const ix = Math.floor(point[0] / cell);
+  const iy = Math.floor(point[1] / cell);
+  const radius = Math.max(1, Math.ceil(limitKm / (cell * 60)) + 1);
+  let best = Infinity;
+  for (let dx = -radius; dx <= radius; dx += 1) {
+    for (let dy = -radius; dy <= radius; dy += 1) {
+      const bucket = grid.get((ix + dx) + "," + (iy + dy));
+      if (!bucket) continue;
+      for (let i = 0; i < bucket.length; i += 1) {
+        const distance = kmBetween(point, bucket[i]);
+        if (distance < best) best = distance;
+      }
+    }
+  }
+  return best;
+}
+
+function isGreatLake(point) {
+  const lon = point[0];
+  const lat = point[1];
+  return (lon >= -92.4 && lon <= -84.2 && lat >= 46.4 && lat <= 49)
+    || (lon >= -88.1 && lon <= -84.7 && lat >= 41.6 && lat <= 46.1)
+    || (lon >= -84.8 && lon <= -79.8 && lat >= 43 && lat <= 46.3)
+    || (lon >= -83.5 && lon <= -78.8 && lat >= 41.35 && lat <= 42.95)
+    || (lon >= -79.9 && lon <= -76.1 && lat >= 43.15 && lat <= 44.35);
+}
+
+function unitsWithSea(features, idOf, outlinePoints, frontierPoints, options) {
+  const outline = pointGrid(outlinePoints, options.cell);
+  const frontier = pointGrid(frontierPoints, options.cell);
+  const counts = new Map();
+  const mids = new Map();
+  features.forEach((feature) => {
+    const id = idOf(feature);
+    polygonParts(feature).forEach((polygon) => {
+      const ring = polygon[0];
+      if (!ring) return;
+      for (let i = 0; i < ring.length - 1; i += 1) {
+        const key = edgeKey(ring[i], ring[i + 1]);
+        if (!key) continue;
+        counts.set(key, (counts.get(key) || 0) + 1);
+        if (!mids.has(id)) mids.set(id, []);
+        mids.get(id).push({
+          key,
+          point: [(ring[i][0] + ring[i + 1][0]) / 2, (ring[i][1] + ring[i + 1][1]) / 2],
+        });
+      }
+    });
+  });
+  const neighborCell = options.neighborCell;
+  const neighbors = new Map();
+  mids.forEach((items, id) => {
+    items.forEach((item) => {
+      const key = Math.floor(item.point[0] / neighborCell) + "," + Math.floor(item.point[1] / neighborCell);
+      if (!neighbors.has(key)) neighbors.set(key, []);
+      neighbors.get(key).push({ id, point: item.point });
+    });
+  });
+  const coastal = new Set();
+  mids.forEach((items, id) => {
+    const hit = items.some((item) => {
+      if (counts.get(item.key) !== 1) return false;
+      if (options.isLake && options.isLake(item.point)) return false;
+      if (nearestKm(frontier, options.cell, item.point, options.frontierKm) < options.frontierKm) return false;
+      if (nearestKm(outline, options.cell, item.point, options.outlineKm) >= options.outlineKm) return false;
+      const ix = Math.floor(item.point[0] / neighborCell);
+      const iy = Math.floor(item.point[1] / neighborCell);
+      for (let dx = -options.neighborSpread; dx <= options.neighborSpread; dx += 1) {
+        for (let dy = -options.neighborSpread; dy <= options.neighborSpread; dy += 1) {
+          const bucket = neighbors.get((ix + dx) + "," + (iy + dy));
+          if (!bucket) continue;
+          for (let i = 0; i < bucket.length; i += 1) {
+            if (bucket[i].id !== id && kmBetween(item.point, bucket[i].point) < options.neighborKm) return false;
+          }
+        }
+      }
+      return true;
+    });
+    if (hit) coastal.add(id);
+  });
+  return coastal;
+}
+
+function ringSamples(ring, stepKm) {
+  const points = [];
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    densifyLine(ring[i], ring[i + 1], stepKm).forEach((point) => points.push(point));
+  }
+  return points;
+}
+
+function buildLocalCoasts() {
+  const states = data.states.filter((feature) => !US_SKIP.has(feature.properties.postal));
+  const usa = data.countryById.get("USA");
+  let outline = [];
+  polygonParts(usa).forEach((polygon) => {
+    const ring = polygon[0];
+    if (ring && ring.length > outline.length) outline = ring;
+  });
+  const frontier = data.usFrontier.coordinates.flatMap((line) => densifyLine(line[0], line[1], 10));
+  data.coastalStates = unitsWithSea(
+    states,
+    (feature) => feature.properties.postal,
+    ringSamples(outline, 12),
+    frontier,
+    {
+      cell: 0.6,
+      outlineKm: 18,
+      frontierKm: 35,
+      neighborCell: 0.4,
+      neighborSpread: 1,
+      neighborKm: 4,
+      isLake: isGreatLake,
+    },
+  );
+  const departments = data.departments.filter((feature) => feature.properties.type === "Metropolitan département");
+  const france = data.countryById.get("FRA");
+  const franceOutline = [];
+  polygonParts(france).forEach((polygon) => {
+    const ring = polygon[0];
+    if (!ring) return;
+    const lons = ring.map((point) => point[0]);
+    const lats = ring.map((point) => point[1]);
+    if (Math.min(...lons) < -10 || Math.max(...lats) < 40) return;
+    ringSamples(ring, 6).forEach((point) => franceOutline.push(point));
+  });
+  const franceFrontier = data.franceFrontier.coordinates.flatMap((line) => densifyLine(line[0], line[1], 6));
+  data.coastalDepts = unitsWithSea(
+    departments,
+    (feature) => feature.properties.iso_3166_2,
+    franceOutline,
+    franceFrontier,
+    {
+      cell: 0.25,
+      outlineKm: 15,
+      frontierKm: 12,
+      neighborCell: 0.15,
+      neighborSpread: 2,
+      neighborKm: 3,
+    },
+  );
 }
 
 function sharedEdges(idA, idB) {
@@ -320,10 +494,14 @@ function poolFromIds(ids) {
 
 function currentPool() {
   if (game.modeId === "us") {
-    return data.states.filter((feature) => !US_SKIP.has(feature.properties.postal));
+    const pool = data.states.filter((feature) => !US_SKIP.has(feature.properties.postal));
+    if (!game.hardMode) return pool;
+    return pool.filter((feature) => !data.coastalStates.has(feature.properties.postal));
   }
   if (game.modeId === "france") {
-    return data.departments.filter((feature) => feature.properties.type === "Metropolitan département");
+    const pool = data.departments.filter((feature) => feature.properties.type === "Metropolitan département");
+    if (!game.hardMode) return pool;
+    return pool.filter((feature) => !data.coastalDepts.has(feature.properties.iso_3166_2));
   }
   const ids = { europe: EUROPE, africa: AFRICA, americas: AMERICAS, asia: ASIA }[game.modeId];
   const pool = poolFromIds(ids);
@@ -397,13 +575,59 @@ function fitSeaTexture() {
     .attr("height", imageHeight);
 }
 
-function fitProjection() {
+function activeFrame() {
   const box = FRAMES[game.modeId];
-  view.projection.rotate([-box.center[0], -box.center[1]]);
-  view.projection.scale(frameScale(box)).translate([view.width / 2, view.height / 2]);
+  if (!isCompact()) return box;
+  const centers = {
+    europe: [18, 52],
+    africa: [17, 0],
+    americas: [-74, -14],
+  };
+  const center = centers[game.modeId];
+  return center ? { ...box, center } : box;
 }
 
-function frameScale(box) {
+function fitProjection() {
+  const box = activeFrame();
+  const insets = viewInsets();
+  view.projection.rotate([-box.center[0], -box.center[1]]);
+  view.projection.scale(frameScale(box, insets)).translate([view.width / 2, insetCenterY(insets)]);
+}
+
+function isCompact() {
+  return window.matchMedia("(max-width: 640px)").matches;
+}
+
+function safeInset(edge) {
+  const key = "safe" + edge;
+  if (view[key] != null) return view[key];
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:fixed;left:0;visibility:hidden;pointer-events:none;height:env(safe-area-inset-" + edge + ")";
+  document.body.append(probe);
+  view[key] = probe.offsetHeight || 0;
+  probe.remove();
+  return view[key];
+}
+
+function viewInsets() {
+  if (!isCompact()) return { top: 28, right: 28, bottom: 28, left: 28 };
+  const pad = 14;
+  if (game.phase === "intro" || game.phase === "finish") {
+    return { top: pad, right: pad, bottom: pad, left: pad };
+  }
+  return {
+    top: 168 + safeInset("top"),
+    right: 12,
+    bottom: 112 + safeInset("bottom"),
+    left: 12,
+  };
+}
+
+function insetCenterY(insets) {
+  return insets.top + (view.height - insets.top - insets.bottom) / 2;
+}
+
+function rectangleSamples(box) {
   const samples = [];
   for (let i = 0; i <= 6; i += 1) {
     for (let j = 0; j <= 4; j += 1) {
@@ -413,20 +637,78 @@ function frameScale(box) {
       ]);
     }
   }
+  return samples;
+}
+
+function mobileSamples(modeId) {
+  if (!data.fitSamples) data.fitSamples = {};
+  if (Object.prototype.hasOwnProperty.call(data.fitSamples, modeId)) return data.fitSamples[modeId];
+  const points = [];
+  const push = (feature, step, accept) => {
+    polygonParts(feature).forEach((polygon) => {
+      const ring = polygon[0];
+      if (!ring) return;
+      for (let i = 0; i < ring.length; i += step) {
+        if (accept(ring[i])) points.push(ring[i]);
+      }
+    });
+  };
+  if (modeId === "europe") {
+    EUROPE.forEach((id) => {
+      const feature = data.countryById.get(id);
+      if (!feature) return;
+      push(feature, 5, (point) => point[0] >= -25 && point[0] <= 44 && point[1] >= 34 && point[1] <= 72);
+    });
+  } else if (modeId === "africa") {
+    AFRICA.forEach((id) => {
+      const feature = data.countryById.get(id);
+      if (!feature) return;
+      push(feature, 5, (point) => point[0] >= -19 && point[0] <= 53 && point[1] >= -35.2);
+    });
+  } else if (modeId === "americas") {
+    AMERICAS.forEach((id) => {
+      const feature = data.countryById.get(id);
+      if (!feature) return;
+      push(feature, 6, (point) => {
+        if (id === "USA") return point[0] <= -66 && point[0] >= -130 && point[1] >= 24 && point[1] <= 50;
+        if (id === "CAN") return point[0] >= -132 && point[1] <= 70;
+        if (id === "CHL") return point[0] >= -80;
+        if (id === "ECU") return point[0] >= -82;
+        return point[0] >= -132 && point[0] <= -30;
+      });
+    });
+  } else if (modeId === "us") {
+    data.states.forEach((feature) => {
+      if (US_SKIP.has(feature.properties.postal)) return;
+      push(feature, 8, () => true);
+    });
+  } else if (modeId === "france") {
+    data.departments.forEach((feature) => {
+      if (feature.properties.type !== "Metropolitan département") return;
+      push(feature, 4, () => true);
+    });
+  }
+  data.fitSamples[modeId] = points.length ? points : null;
+  return data.fitSamples[modeId];
+}
+
+function frameScale(box, insets) {
+  const compact = isCompact();
+  const samples = (compact && mobileSamples(game.modeId)) || rectangleSamples(box);
   const projection = view.projection;
   const cx = view.width / 2;
-  const cy = view.height / 2;
-  const pad = 28;
+  const cy = insetCenterY(insets);
   const fits = (scale) => {
     projection.scale(scale).translate([cx, cy]);
     return samples.every((sample) => {
       const point = projection(sample);
-      if (!point) return false;
-      return point[0] >= pad && point[0] <= view.width - pad && point[1] >= pad && point[1] <= view.height - pad;
+      if (!point) return true;
+      return point[0] >= insets.left && point[0] <= view.width - insets.right
+        && point[1] >= insets.top && point[1] <= view.height - insets.bottom;
     });
   };
   let lo = 40;
-  let hi = 5000;
+  let hi = 8000;
   if (!fits(lo)) return Math.min(view.width, view.height) * 0.46;
   while (hi - lo > 1) {
     const mid = (lo + hi) / 2;
@@ -454,14 +736,15 @@ function flyToFrame() {
     redraw();
     return;
   }
-  const box = FRAMES[game.modeId];
+  const box = activeFrame();
   const projection = view.projection;
   stopGlobeSpin();
   const fromRotate = projection.rotate();
   const fromScale = projection.scale();
   const targetRotate = [-box.center[0], -box.center[1], 0];
   projection.rotate(targetRotate);
-  const targetScale = frameScale(box);
+  const insets = viewInsets();
+  const targetScale = frameScale(box, insets);
   projection.rotate(fromRotate).scale(fromScale);
   const toLambda = fromRotate[0] + angleDelta(fromRotate[0], targetRotate[0]);
   const toPhi = fromRotate[1] + angleDelta(fromRotate[1], targetRotate[1]);
@@ -652,12 +935,17 @@ function resolveClick(lonlat) {
     lonlat,
     nearest: nearest.point,
   });
+  const last = game.index === game.rounds.length - 1;
   game.phase = "result";
   document.body.classList.remove("is-playing");
   document.body.classList.add("is-result");
   showResult();
   renderHistory();
-  redraw();
+  if (isCompact()) resize();
+  else redraw();
+  if (!last) return;
+  clearFinishTimer();
+  finishTimer = setTimeout(finishGame, 1800);
 }
 
 function placeAt(lonlat) {
@@ -749,7 +1037,32 @@ function displayName(feature) {
   return props.NAME_FR || props.NAME;
 }
 
+function clearFinishTimer() {
+  clearTimeout(finishTimer);
+  finishTimer = null;
+}
+
+function showHome() {
+  clearFinishTimer();
+  game.phase = "intro";
+  game.click = null;
+  document.body.classList.remove("is-playing", "is-result", "is-finish", "is-review");
+  document.body.classList.add("is-intro");
+  els.finish.hidden = true;
+  els.chrome.hidden = true;
+  els.historyWrap.hidden = true;
+  els.intro.hidden = false;
+  document.getElementById("screen-game").hidden = false;
+  document.getElementById("review-bar").hidden = true;
+  hideReviewTip();
+  view.borders.classed("is-instant", true).classed("is-on", false);
+  requestAnimationFrame(() => view.borders.classed("is-instant", false));
+  syncControls();
+  resize();
+}
+
 function startGame() {
+  clearFinishTimer();
   const pool = shuffle(currentPool());
   const count = Math.min(game.length, pool.length);
   game.rounds = pool.slice(0, count).map((feature) => ({
@@ -787,11 +1100,13 @@ function showRound() {
 
 function showResult() {
   const result = game.results[game.results.length - 1];
-  const last = game.index === game.rounds.length - 1;
   els.result.hidden = false;
   els.resultScore.textContent = String(result.score);
   els.resultDetail.textContent = resultSentence(result);
-  document.getElementById("btn-next").textContent = last ? "Voir les frontières" : "Manche suivante";
+  const next = document.getElementById("btn-next");
+  const last = game.index === game.rounds.length - 1;
+  next.hidden = false;
+  next.textContent = last ? "Voir mon score" : "Manche suivante";
 }
 
 function resultSentence(result) {
@@ -807,6 +1122,7 @@ function resultSentence(result) {
 
 function nextRound() {
   if (game.index + 1 >= game.rounds.length) {
+    clearFinishTimer();
     finishGame();
     return;
   }
@@ -815,18 +1131,22 @@ function nextRound() {
   document.body.classList.remove("is-result");
   document.body.classList.add("is-playing");
   showRound();
-  redraw();
+  if (isCompact()) resize();
+  else redraw();
 }
 
 function finishGame() {
+  clearFinishTimer();
   game.phase = "finish";
   game.click = null;
   document.body.classList.remove("is-playing", "is-result");
   document.body.classList.add("is-finish");
+  els.intro.hidden = true;
   els.chrome.hidden = true;
   els.historyWrap.hidden = true;
   view.borders.classed("is-on", true);
-  redraw();
+  if (isCompact()) resize();
+  else redraw();
   renderRecap();
   els.finish.hidden = false;
 }
@@ -840,7 +1160,8 @@ function showMyMap() {
   document.getElementById("screen-game").hidden = true;
   document.getElementById("review-bar").hidden = false;
   renderHistory();
-  redraw();
+  if (isCompact()) resize();
+  else redraw();
 }
 
 function showScore() {
@@ -853,7 +1174,8 @@ function showScore() {
   document.getElementById("screen-game").hidden = false;
   document.getElementById("review-bar").hidden = true;
   hideReviewTip();
-  redraw();
+  if (isCompact()) resize();
+  else redraw();
 }
 
 function renderHistory() {
@@ -880,7 +1202,6 @@ function renderRecap() {
     + "<p class=\"finish-recap-score\">" + result.score + "</p>"
     + "<p class=\"finish-recap-detail\">" + escapeHtml(resultSentence(result)) + "</p></li>"
   )).join("");
-  els.finishNote.textContent = modeNote();
 }
 
 function onHardChange(event) {
@@ -893,8 +1214,11 @@ function onHardChange(event) {
   syncControls();
 }
 
-function isCountryMode() {
-  return game.modeId !== "us" && game.modeId !== "france";
+function hardHint() {
+  if (game.modeId === "americas") return "Indisponible ici : il ne resterait que deux pays.";
+  if (game.modeId === "us") return "États enclavés seulement.";
+  if (game.modeId === "france") return "Départements enclavés seulement.";
+  return "Pays enclavés seulement.";
 }
 
 function onControlClick(event) {
@@ -918,6 +1242,8 @@ function syncControls() {
   document.querySelectorAll("[data-mode]").forEach((button) => {
     button.setAttribute("aria-pressed", button.dataset.mode === game.modeId ? "true" : "false");
   });
+  const ask = document.getElementById("intro-ask");
+  if (ask) ask.textContent = introAsk();
   const unit = modeUnit();
   document.querySelectorAll("[data-length]").forEach((button) => {
     const length = Number(button.dataset.length);
@@ -930,121 +1256,16 @@ function syncControls() {
     input.checked = game.hardMode;
     input.disabled = americas;
   });
-  const hint = americas
-    ? "Indisponible ici : il ne resterait que deux pays."
-    : isCountryMode()
-      ? "Pays enclavés seulement."
-      : "Pour les cartes de pays.";
+  const hint = hardHint();
   document.querySelectorAll(".hard-hint").forEach((node) => {
     node.textContent = hint;
   });
-  if (els.finishNote) els.finishNote.textContent = modeNote();
-  renderScoreHelp();
 }
 
-function scoreHelp() {
-  if (game.modeId === "france") {
-    return {
-      intro: "Dans le département, 100 points. Un clic sur le contour compte comme bon. À côté, la note glisse jusqu'à 0.",
-      rows: [
-        ["10 km", "45"],
-        ["15 km", "35"],
-        ["20 km", "25"],
-        ["30 km", "10"],
-        ["Plus de 30 km", "0"],
-      ],
-    };
-  }
-  if (game.modeId === "us") {
-    return {
-      intro: "Dans l'État, 100 points. Un clic sur le contour compte comme bon.",
-      rows: [
-        ["50 km ou moins", "25"],
-        ["100 km ou moins", "10"],
-        ["150 km ou moins", "5"],
-        ["Plus de 150 km", "0"],
-      ],
-    };
-  }
-  return {
-    intro: "Dans le pays, 100 points. Un clic sur le contour compte comme bon.",
-    rows: [
-      ["50 km ou moins", "25"],
-      ["100 km ou moins", "10"],
-      ["150 km ou moins", "5"],
-      ["Plus de 150 km", "0"],
-    ],
-    note: game.modeId === "americas"
-      ? ""
-      : "En mode difficile, la Caspienne et la mer d'Aral sont gardées.",
-  };
-}
-
-function renderScoreHelp() {
-  if (!els.scorePopBody) return;
-  const help = scoreHelp();
-  const intro = document.createElement("p");
-  intro.className = "score-pop-intro";
-  intro.textContent = help.intro;
-  const list = document.createElement("ul");
-  list.className = "score-pop-list";
-  help.rows.forEach((row) => {
-    const item = document.createElement("li");
-    const label = document.createElement("span");
-    const value = document.createElement("span");
-    label.textContent = row[0];
-    value.textContent = row[1];
-    item.append(label, value);
-    list.append(item);
-  });
-  const children = [intro, list];
-  if (help.note) {
-    const note = document.createElement("p");
-    note.className = "score-pop-note";
-    note.textContent = help.note;
-    children.push(note);
-  }
-  els.scorePopBody.replaceChildren(...children);
-}
-
-function toggleScorePop(event) {
-  event.stopPropagation();
-  if (els.scorePop.hidden) {
-    renderScoreHelp();
-    els.scorePop.hidden = false;
-    els.scoreInfo.setAttribute("aria-expanded", "true");
-    return;
-  }
-  hideScorePop();
-}
-
-function hideScorePop() {
-  if (!els.scorePop) return;
-  els.scorePop.hidden = true;
-  els.scoreInfo.setAttribute("aria-expanded", "false");
-}
-
-function onDocumentClick(event) {
-  if (!els.scorePop || els.scorePop.hidden) return;
-  if (event.target.closest("#score-pop") || event.target.closest("#btn-score-info")) return;
-  hideScorePop();
-}
-
-function onDocumentKey(event) {
-  if (event.key === "Escape") hideScorePop();
-}
-
-function modeNote() {
-  if (game.hardMode && isCountryMode()) {
-    const count = Math.min(game.length, currentPool().length);
-    const words = [null, "Un", "Deux", "Trois", "Quatre", "Cinq", "Six", "Sept", "Huit", "Neuf", "Dix", "Onze", "Douze", "Treize", "Quatorze", "Quinze", "Seize", "Dix-sept", "Dix-huit", "Dix-neuf", "Vingt"];
-    const label = words[count] || String(count);
-    const noun = count > 1 ? "pays enclavés" : "pays enclavé";
-    const drawn = count > 1 ? "tirés" : "tiré";
-    return label + " " + noun + " " + drawn + " au sort. Les frontières s'affichent à la fin.";
-  }
-  const count = game.length === 5 ? "Cinq" : "Dix";
-  return count + " " + modeUnit() + " tirés au sort. Les frontières s'affichent à la fin.";
+function introAsk() {
+  if (game.modeId === "us") return "Saurez-vous placer les États quand même ?";
+  if (game.modeId === "france") return "Saurez-vous placer les départements quand même ?";
+  return "Saurez-vous placer les pays quand même ?";
 }
 
 function modeUnit() {
