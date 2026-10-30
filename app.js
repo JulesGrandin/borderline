@@ -3,7 +3,7 @@ const BORDER_HIT_KM = 5;
 
 const FRAMES = {
   europe: { center: [15, 54], west: -25, east: 42, south: 34, north: 71 },
-  africa: { center: [17, 3], west: -18, east: 52, south: -36, north: 38 },
+  africa: { center: [17, 1.3], west: -18, east: 52, south: -36, north: 38 },
   americas: { center: [-80, 10], west: -128, east: -34, south: -56, north: 72 },
   asia: { center: [88, 32], west: 26, east: 146, south: -11, north: 72 },
   us: { center: [-97, 39], west: -128, east: -65, south: 15, north: 58 },
@@ -54,6 +54,10 @@ const data = {
 
 const sampleCache = new Map();
 let finishTimer = null;
+let roundTimerRaf = null;
+let reviewHideTimer = null;
+let litReview = null;
+const ROUND_TIME_MS = 15000;
 
 const els = {};
 
@@ -79,6 +83,16 @@ async function init() {
   els.reviewTip = document.getElementById("review-tip");
   els.reviewTipName = document.getElementById("review-tip-name");
   els.reviewTipDetail = document.getElementById("review-tip-detail");
+  els.timerBlock = document.getElementById("timer-block");
+  els.timerFill = document.getElementById("timer-fill");
+  els.timerValue = document.getElementById("timer-value");
+  els.timerBar = document.querySelector("#timer-block .timer-bar");
+  els.scorePop = document.getElementById("score-pop");
+  els.scorePopBody = document.getElementById("score-pop-body");
+  els.scoreInfo = document.getElementById("btn-score-info");
+  document.getElementById("btn-score-info").addEventListener("click", toggleScorePop);
+  document.addEventListener("click", onDocumentClick);
+  document.addEventListener("keydown", onDocumentKey);
   document.querySelectorAll("[data-hard]").forEach((input) => {
     input.addEventListener("change", onHardChange);
   });
@@ -657,7 +671,7 @@ function mobileSamples(modeId) {
     EUROPE.forEach((id) => {
       const feature = data.countryById.get(id);
       if (!feature) return;
-      push(feature, 5, (point) => point[0] >= -25 && point[0] <= 44 && point[1] >= 34 && point[1] <= 72);
+      push(feature, 5, (point) => point[0] >= -25 && point[0] <= 46 && point[1] >= 34 && point[1] <= 72);
     });
   } else if (modeId === "africa") {
     AFRICA.forEach((id) => {
@@ -677,6 +691,12 @@ function mobileSamples(modeId) {
         return point[0] >= -132 && point[0] <= -30;
       });
     });
+  } else if (modeId === "asia") {
+    ASIA.forEach((id) => {
+      const feature = data.countryById.get(id);
+      if (!feature) return;
+      push(feature, 6, (point) => point[0] >= 25 && point[0] <= 150 && point[1] >= -12 && point[1] <= 66);
+    });
   } else if (modeId === "us") {
     data.states.forEach((feature) => {
       if (US_SKIP.has(feature.properties.postal)) return;
@@ -693,8 +713,8 @@ function mobileSamples(modeId) {
 }
 
 function frameScale(box, insets) {
-  const compact = isCompact();
-  const samples = (compact && mobileSamples(game.modeId)) || rectangleSamples(box);
+  const outline = game.modeId === "americas" && !isCompact() ? null : mobileSamples(game.modeId);
+  const samples = outline || rectangleSamples(box);
   const projection = view.projection;
   const cx = view.width / 2;
   const cy = insetCenterY(insets);
@@ -806,13 +826,17 @@ function redraw() {
   view.stateBorders.attr("d", innerBorders ? path(innerBorders) : null);
   view.disputedBorders.attr("d", worldBorders ? path(data.disputedBorders) : null);
   view.highlights.selectAll("path")
-    .data(reviewFills(), (mark) => featureKey(mark.feature))
+    .data(reviewFills(), (mark) => mark.index)
     .join("path")
     .attr("class", (mark) => (mark.hit ? "highlight highlight-hit" : "highlight highlight-miss"))
+    .attr("data-review", (mark) => mark.index)
     .attr("d", (mark) => path(mark.feature))
     .on("pointerenter pointermove", showReviewTip)
-    .on("pointerleave", hideReviewTip);
-  if (game.phase !== "review") hideReviewTip();
+    .on("pointerleave", scheduleHideReview);
+  if (game.phase !== "review") {
+    litReview = null;
+    hideReviewTip();
+  }
   view.targets.selectAll("path")
     .data(outlineFeatures(), featureKey)
     .join("path")
@@ -820,6 +844,7 @@ function redraw() {
     .attr("d", path);
   drawClicks();
   view.coastline.attr("d", path(data.coastline));
+  if (game.phase === "review") applyReviewLight();
 }
 
 function frontierForMode() {
@@ -841,29 +866,66 @@ function outlineFeatures() {
 
 function reviewFills() {
   if (game.phase !== "review") return [];
-  return game.results.map((result) => ({
+  return game.results.map((result, index) => ({
+    index,
     feature: result.feature,
     hit: result.hit,
     name: result.name,
     km: result.km,
+    timedOut: result.timedOut,
   }));
 }
 
 function showReviewTip(event, mark) {
+  clearTimeout(reviewHideTimer);
+  lightReview(mark.index);
   els.reviewTipName.textContent = mark.name;
-  els.reviewTipDetail.textContent = mark.hit ? "Bien placé" : "Mal placé, à " + formatKm(mark.km);
+  els.reviewTipDetail.textContent = mark.hit
+    ? "Bien placé"
+    : mark.timedOut
+      ? "Temps écoulé"
+      : "Mal placé, à " + formatKm(mark.km);
   els.reviewTip.classList.toggle("is-hit", mark.hit);
   els.reviewTip.classList.toggle("is-miss", !mark.hit);
   els.reviewTip.hidden = false;
-  const pad = 12;
+  const pad = 10;
+  const gap = 14;
   const width = els.reviewTip.offsetWidth;
   const height = els.reviewTip.offsetHeight;
-  let x = event.clientX + 16;
-  let y = event.clientY + 18;
-  if (x + width > window.innerWidth - pad) x = event.clientX - width - 14;
-  if (y + height > window.innerHeight - pad) y = event.clientY - height - 14;
+  let x = event.clientX - width / 2;
+  let y = event.clientY - height - gap;
+  const below = y < pad;
+  if (below) y = event.clientY + gap;
+  if (x < pad) x = pad;
+  if (x + width > window.innerWidth - pad) x = window.innerWidth - pad - width;
+  const tipX = Math.min(width - 14, Math.max(14, event.clientX - x));
+  els.reviewTip.classList.toggle("is-below", below);
   els.reviewTip.style.left = x + "px";
   els.reviewTip.style.top = y + "px";
+  els.reviewTip.style.setProperty("--tip-x", tipX + "px");
+}
+
+function scheduleHideReview() {
+  clearTimeout(reviewHideTimer);
+  reviewHideTimer = setTimeout(clearReviewLight, 60);
+}
+
+function lightReview(index) {
+  litReview = index;
+  applyReviewLight();
+}
+
+function clearReviewLight() {
+  litReview = null;
+  applyReviewLight();
+  hideReviewTip();
+}
+
+function applyReviewLight() {
+  if (!view.svg) return;
+  view.svg.selectAll("[data-review]").classed("is-lit", function () {
+    return litReview !== null && this.getAttribute("data-review") === String(litReview);
+  });
 }
 
 function hideReviewTip() {
@@ -878,27 +940,42 @@ function featureKey(feature) {
 function visibleClicks() {
   if (game.phase === "result" && game.click) return [game.click];
   if (game.phase === "review") {
-    return game.results.map((result) => ({
-      lonlat: result.lonlat,
-      nearest: result.nearest,
-      hit: result.hit,
-    }));
+    return game.results.flatMap((result, index) => {
+      if (!result.lonlat) return [];
+      return [{
+        index,
+        lonlat: result.lonlat,
+        nearest: result.nearest,
+        hit: result.hit,
+        name: result.name,
+        km: result.km,
+        timedOut: result.timedOut,
+      }];
+    });
   }
   return [];
 }
 
 function drawClicks() {
   const clicks = visibleClicks();
-  view.clicks.selectAll("path")
-    .data(clicks.filter((click) => !click.hit && click.nearest))
+  const review = game.phase === "review";
+  const misses = clicks.filter((click) => !click.hit && click.nearest);
+  const key = (click) => (click.index === undefined ? "play" : click.index);
+  view.clicks.selectAll("path.miss-arc-hit")
+    .data(review ? misses : [], key)
+    .join("path")
+    .attr("class", "miss-arc-hit")
+    .attr("data-review", (click) => click.index)
+    .attr("d", (click) => view.path(arcLine(click.lonlat, click.nearest)))
+    .on("pointerenter pointermove", showReviewTip)
+    .on("pointerleave", scheduleHideReview);
+  view.clicks.selectAll("path.miss-arc")
+    .data(misses, key)
     .join("path")
     .attr("class", "miss-arc")
+    .attr("data-review", (click) => (review ? click.index : null))
     .attr("d", (click) => view.path(arcLine(click.lonlat, click.nearest)));
-  view.clicks.selectAll("circle")
-    .data(clicks)
-    .join("circle")
-    .attr("class", (click) => (click.hit ? "click-dot is-hit" : "click-dot"))
-    .attr("r", 5)
+  const placed = (selection) => selection
     .attr("cx", (click) => {
       const point = view.projection(click.lonlat);
       return point ? point[0] : 0;
@@ -908,6 +985,22 @@ function drawClicks() {
       return point ? point[1] : 0;
     })
     .style("display", (click) => (view.projection(click.lonlat) ? null : "none"));
+  view.clicks.selectAll("circle.click-dot")
+    .data(clicks, key)
+    .join("circle")
+    .attr("class", (click) => (click.hit ? "click-dot is-hit" : "click-dot"))
+    .attr("data-review", (click) => (review ? click.index : null))
+    .attr("r", 5)
+    .call(placed);
+  view.clicks.selectAll("circle.click-dot-hit")
+    .data(review ? clicks : [], key)
+    .join("circle")
+    .attr("class", "click-dot-hit")
+    .attr("data-review", (click) => click.index)
+    .attr("r", 12)
+    .on("pointerenter pointermove", showReviewTip)
+    .on("pointerleave", scheduleHideReview)
+    .call(placed);
 }
 
 function onMapClick(event) {
@@ -918,6 +1011,8 @@ function onMapClick(event) {
 }
 
 function resolveClick(lonlat) {
+  if (game.phase !== "play") return;
+  stopRoundTimer();
   const round = game.rounds[game.index];
   const nearest = nearestOnFeature(lonlat, round.feature);
   const inside = d3.geoContains(round.feature, lonlat);
@@ -935,6 +1030,29 @@ function resolveClick(lonlat) {
     lonlat,
     nearest: nearest.point,
   });
+  enterResult();
+}
+
+function resolveTimeout() {
+  if (game.phase !== "play") return;
+  stopRoundTimer();
+  const round = game.rounds[game.index];
+  game.click = null;
+  game.results.push({
+    name: round.name,
+    score: 0,
+    hit: false,
+    timedOut: true,
+    km: null,
+    where: null,
+    feature: round.feature,
+    lonlat: null,
+    nearest: null,
+  });
+  enterResult();
+}
+
+function enterResult() {
   const last = game.index === game.rounds.length - 1;
   game.phase = "result";
   document.body.classList.remove("is-playing");
@@ -946,6 +1064,38 @@ function resolveClick(lonlat) {
   if (!last) return;
   clearFinishTimer();
   finishTimer = setTimeout(finishGame, 1800);
+}
+
+function stopRoundTimer() {
+  if (roundTimerRaf) {
+    cancelAnimationFrame(roundTimerRaf);
+    roundTimerRaf = null;
+  }
+  if (els.timerBlock) els.timerBlock.hidden = true;
+}
+
+function startRoundTimer() {
+  stopRoundTimer();
+  game.roundEndsAt = Date.now() + ROUND_TIME_MS;
+  els.timerBlock.hidden = false;
+  els.timerFill.style.width = "100%";
+  els.timerBar.setAttribute("aria-valuenow", "100");
+  els.timerValue.textContent = Math.round(ROUND_TIME_MS / 1000) + " s";
+  tickRoundTimer();
+}
+
+function tickRoundTimer() {
+  if (game.phase !== "play") return;
+  const left = game.roundEndsAt - Date.now();
+  if (left <= 0) {
+    resolveTimeout();
+    return;
+  }
+  const pct = Math.max(0, Math.min(100, (left / ROUND_TIME_MS) * 100));
+  els.timerFill.style.width = pct + "%";
+  els.timerBar.setAttribute("aria-valuenow", String(Math.round(pct)));
+  els.timerValue.textContent = Math.max(0, Math.ceil(left / 1000)) + " s";
+  roundTimerRaf = requestAnimationFrame(tickRoundTimer);
 }
 
 function placeAt(lonlat) {
@@ -1044,6 +1194,7 @@ function clearFinishTimer() {
 
 function showHome() {
   clearFinishTimer();
+  stopRoundTimer();
   game.phase = "intro";
   game.click = null;
   document.body.classList.remove("is-playing", "is-result", "is-finish", "is-review");
@@ -1096,6 +1247,7 @@ function showRound() {
   els.target.textContent = round.name;
   els.result.hidden = true;
   game.click = null;
+  startRoundTimer();
 }
 
 function showResult() {
@@ -1110,6 +1262,7 @@ function showResult() {
 }
 
 function resultSentence(result) {
+  if (result.timedOut) return "Temps écoulé.";
   if (result.hit) {
     if (game.modeId === "us") return "Dans l'État.";
     if (game.modeId === "france") return "Dans le département.";
@@ -1137,6 +1290,7 @@ function nextRound() {
 
 function finishGame() {
   clearFinishTimer();
+  stopRoundTimer();
   game.phase = "finish";
   game.click = null;
   document.body.classList.remove("is-playing", "is-result");
@@ -1260,6 +1414,101 @@ function syncControls() {
   document.querySelectorAll(".hard-hint").forEach((node) => {
     node.textContent = hint;
   });
+  document.body.classList.toggle("is-europe", game.modeId === "europe");
+  renderScoreHelp();
+}
+
+function scoreHelp() {
+  if (game.modeId === "france") {
+    return {
+      intro: "Dans le département, 100 points. Un clic sur le contour compte comme bon. À côté, la note glisse jusqu'à 0.",
+      rows: [
+        ["10 km", "45"],
+        ["15 km", "35"],
+        ["20 km", "25"],
+        ["30 km", "10"],
+        ["Plus de 30 km", "0"],
+      ],
+      note: "Le mode difficile enlève les îles et les départements côtiers.",
+    };
+  }
+  if (game.modeId === "us") {
+    return {
+      intro: "Dans l'État, 100 points. Un clic sur le contour compte comme bon.",
+      rows: [
+        ["50 km ou moins", "25"],
+        ["100 km ou moins", "10"],
+        ["150 km ou moins", "5"],
+        ["Plus de 150 km", "0"],
+      ],
+      note: "Le mode difficile enlève les États côtiers. Les Grands Lacs restent.",
+    };
+  }
+  let note = "Le mode difficile enlève les îles et les pays côtiers. La Caspienne et la mer d'Aral restent.";
+  if (game.modeId === "americas") note += " Indisponible ici : il ne resterait que deux pays.";
+  return {
+    intro: "Dans le pays, 100 points. Un clic sur le contour compte comme bon.",
+    rows: [
+      ["50 km ou moins", "25"],
+      ["100 km ou moins", "10"],
+      ["150 km ou moins", "5"],
+      ["Plus de 150 km", "0"],
+    ],
+    note: note,
+  };
+}
+
+function renderScoreHelp() {
+  if (!els.scorePopBody) return;
+  const help = scoreHelp();
+  const intro = document.createElement("p");
+  intro.className = "score-pop-intro";
+  intro.textContent = help.intro;
+  const list = document.createElement("ul");
+  list.className = "score-pop-list";
+  help.rows.forEach((row) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    const value = document.createElement("span");
+    label.textContent = row[0];
+    value.textContent = row[1];
+    item.append(label, value);
+    list.append(item);
+  });
+  const note = document.createElement("p");
+  note.className = "score-pop-note";
+  note.textContent = help.note;
+  const credit = document.createElement("p");
+  credit.className = "score-pop-credit";
+  credit.textContent = "Fond de carte Natural Earth";
+  els.scorePopBody.replaceChildren(intro, list, note, credit);
+}
+
+function toggleScorePop(event) {
+  event.stopPropagation();
+  if (els.scorePop.hidden) {
+    renderScoreHelp();
+    els.scorePop.hidden = false;
+    els.scoreInfo.setAttribute("aria-expanded", "true");
+    return;
+  }
+  hideScorePop();
+}
+
+function hideScorePop() {
+  if (!els.scorePop) return;
+  els.scorePop.hidden = true;
+  els.scoreInfo.setAttribute("aria-expanded", "false");
+}
+
+function onDocumentClick(event) {
+  if (!els.scorePop || els.scorePop.hidden) return;
+  if (event.target.closest("#score-pop") || event.target.closest("#btn-score-info")) return;
+  hideScorePop();
+}
+
+function onDocumentKey(event) {
+  if (event.key === "Escape") hideScorePop();
 }
 
 function introAsk() {

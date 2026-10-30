@@ -48,7 +48,6 @@
   </div>
 
   <header id="chrome" hidden>
-    <h1 class="brand">Borderline</h1>
     <div id="screen-game">
       <p class="round-meta" id="round-kicker">Manche 1 / 5</p>
       <p class="round-prompt" id="round-prompt">Cliquez sur</p>
@@ -63,7 +62,6 @@
       </div>
     </div>
     <div id="review-bar" hidden>
-      <p class="round-prompt">Votre carte</p>
       <button type="button" id="btn-back" class="btn-primary btn-block">Retour au score</button>
     </div>
   </header>
@@ -84,13 +82,32 @@
     </div>
   </div>
 
+  <div id="timer-block" class="timer-block" hidden aria-label="Temps restant">
+    <div class="timer-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
+      <div id="timer-fill" class="timer-fill">
+        <span class="timer-value" id="timer-value">15 s</span>
+      </div>
+    </div>
+  </div>
+
   <div id="map-shell">
     <div id="map"></div>
-    <p class="map-credit">Fond de carte Natural Earth</p>
   </div>
   <div id="review-tip" class="review-tip" hidden role="tooltip">
     <p class="review-tip-name" id="review-tip-name"></p>
     <p class="review-tip-detail" id="review-tip-detail"></p>
+  </div>
+
+  <button type="button" id="btn-score-info" class="score-info" aria-label="Comment les scores sont calculés" aria-expanded="false" aria-controls="score-pop">
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.25"></circle>
+      <path d="M8 7.15v4.15" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"></path>
+      <circle cx="8" cy="4.55" r="0.75" fill="currentColor"></circle>
+    </svg>
+  </button>
+  <div id="score-pop" class="score-pop" hidden role="dialog" aria-labelledby="score-pop-title">
+    <p class="score-pop-title" id="score-pop-title">Les scores</p>
+    <div id="score-pop-body"></div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
